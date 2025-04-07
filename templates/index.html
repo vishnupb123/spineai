@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpineCheck AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            background: linear-gradient(to right, #e3f2fd, #ffffff);
+            font-family: 'Segoe UI', sans-serif;
+        }
+        .container-custom {
+            max-width: 1200px;
+            margin: auto;
+            padding: 10px 0;
+            display: flex;
+            flex-direction: row;
+            gap: 1rem;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .form-section, .output-section {
+            flex: 1;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            overflow-y: auto;
+            max-height: 100%;
+        }
+        .form-section {
+            background-color: #f0f8ff;
+        }
+        .output-section {
+            background-color: #ffffff;
+        }
+        .result-box {
+            padding: 15px;
+            border-radius: 10px;
+            color: white;
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
+        .green { background-color: #28a745; }
+        .orange { background-color: #ffc107; color: #212529; }
+        .red { background-color: #dc3545; }
+        canvas {
+            max-height: 480px !important;
+            margin:20px 0;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        .model-info {
+            padding: 12px;
+            border-left: 5px solid #0d6efd;
+            background-color: #e9f5ff;
+            border-radius: 8px;
+            margin-top: 10px;
+            font-size: 0.95rem;
+        }
+        .feature-importance {
+            margin-top: 15px;
+            background: #f6f8fa;
+            padding: 12px;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+<div class="container-custom">
+    <div class="form-section">
+        <h4 class="mb-3">Enter Patient Data</h4>
+        <form action="/predict" method="POST" id="prediction-form">
+            {% for feature in ['pelvic_incidence', 'pelvic_tilt', 'lumbar_lordosis_angle', 'sacral_slope', 'pelvic_radius', 'degree_spondylolisthesis'] %}
+            <div class="mb-2">
+                <label for="{{ feature }}" class="form-label">{{ feature.replace('_', ' ').title() }}</label>
+                <input type="number" step="any" class="form-control feature-input" id="{{ feature }}" name="{{ feature }}" required>
+            </div>
+            {% endfor %}
+            <div class="mb-3">
+                <label class="form-label">Select Model</label>
+                <select class="form-select" name="model" id="model-select">
+                    <option value="lr">Logistic Regression</option>
+                    <option value="svc">Support Vector Classifier</option>
+                    <option value="rf">Random Forest</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Predict</button>
+        </form>
+
+        <div class="model-info" id="model-info-box">
+            <strong>Model Info:</strong>
+            <div id="model-info-text">Logistic Regression is a simple and interpretable model used for classification tasks.</div>
+        </div>
+
+        <div class="feature-importance" id="feature-importance-box" style="display: none">
+            <strong>Feature Importance (Random Forest):</strong>
+            <ul id="importance-list" class="mb-0"></ul>
+        </div>
+    </div>
+
+    <div class="output-section">
+        <h4 class="mb-3">Results</h4>
+        {% if prediction_text %}
+            <div class="result-box {{ prediction_color }}">
+                <strong>{{ prediction_text }}</strong><br>
+                Confidence: {{ confidence_score }}%<br>
+                <small>{{ prediction_message }}</small>
+            </div>
+        {% endif %}
+
+        <canvas id="featureChart"></canvas>
+    </div>
+</div>
+
+<script>
+    const inputElements = document.querySelectorAll('.feature-input');
+    const ctx = document.getElementById('featureChart').getContext('2d');
+
+    const medicalThresholds = {
+        pelvic_incidence: [40, 70],
+        pelvic_tilt: [5, 25],
+        lumbar_lordosis_angle: [20, 60],
+        sacral_slope: [30, 50],
+        pelvic_radius: [90, 130],
+        degree_spondylolisthesis: [0, 10]
+    };
+
+    const chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: Object.keys(medicalThresholds),
+            datasets: [{
+                label: 'Feature Value',
+                data: Array(Object.keys(medicalThresholds).length).fill(0),
+                backgroundColor: Array(Object.keys(medicalThresholds).length).fill('#28a745')
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: true }
+            }
+        }
+    });
+
+    inputElements.forEach((input, index) => {
+        input.addEventListener('input', () => {
+            const value = parseFloat(input.value);
+            const feature = input.name;
+            const [min, max] = medicalThresholds[feature];
+            chart.data.datasets[0].data[index] = value;
+            chart.data.datasets[0].backgroundColor[index] = (value < min || value > max) ? '#dc3545' : '#28a745';
+            chart.update();
+        });
+    });
+
+    const modelSelect = document.getElementById('model-select');
+    const modelInfoText = document.getElementById('model-info-text');
+    const featureBox = document.getElementById('feature-importance-box');
+    const importanceList = document.getElementById('importance-list');
+
+    modelSelect.addEventListener('change', function () {
+        const model = this.value;
+        let info = '';
+        featureBox.style.display = 'none';
+        importanceList.innerHTML = '';
+
+        if (model === 'lr') {
+            info = 'Logistic Regression is a simple and interpretable model used for classification tasks.';
+        } else if (model === 'svc') {
+            info = 'Support Vector Classifier is a robust algorithm effective in high-dimensional spaces.';
+        } else if (model === 'rf') {
+            info = 'Random Forest is a powerful ensemble method that provides feature importance insights.';
+            featureBox.style.display = 'block';
+            const importances = [
+                { name: 'degree_spondylolisthesis', value: 0.6 },
+                { name: 'pelvic_tilt', value: 0.2 },
+                { name: 'pelvic_radius', value: 0.1 },
+                { name: 'pelvic_incidence', value: 0.05 },
+                { name: 'sacral_slope', value: 0.03 },
+                { name: 'lumbar_lordosis_angle', value: 0.02 },
+            ];
+            importances.forEach(item => {
+                const li = document.createElement('li');
+                li.textContent = `${item.name.replaceAll('_', ' ')}: ${item.value}`;
+                importanceList.appendChild(li);
+            });
+        }
+        modelInfoText.textContent = info;
+    });
+</script>
+
+<script>
+    const inputFeatures = JSON.parse('{{ input_features | tojson | safe }}') || 0
+    if (inputFeatures) {
+        Object.entries(inputFeatures).forEach(([feature, value]) => {
+            const input = document.querySelector(`#${feature}`);
+            if (input) {
+                input.value = value;
+                const chartIndex = chart.data.labels.indexOf(feature);
+                if (chartIndex !== -1) {
+                    const [min, max] = medicalThresholds[feature];
+                    chart.data.datasets[0].data[chartIndex] = parseFloat(value);
+                    chart.data.datasets[0].backgroundColor[chartIndex] = (value < min || value > max) ? '#dc3545' : '#28a745';
+                }
+            }
+        });
+        chart.update();
+    }
+</script>
+
+</body>
+</html>
